@@ -1,6 +1,28 @@
 # Robobo.
 
-Work in progress.
+Robobo is a poor stupid bot that only avoids crashing against walls (or cats)
+by turning right before reaching an obstacle.
+
+This is a work in progress.
+
+## Parts
+
+* [Dagu Rover 5 chassis](http://www.robotshop.com/en/dagu-rover-5-4wd-tracked-chassis.html)
+* [DRV8835 motor controller](http://www.pololu.com/product/2135)
+* [Arduino UNO](http://arduino.cc/en/Main/arduinoBoardUno)
+* [Parallax PING))) Sensor](http://www.pololu.com/product/1605)
+* [Parallax Standard Servo](http://www.parallax.com/product/900-00005)
+
+## Software
+
+* [motor_driver.h](https://github.com/xiam/arduino_drv8833)
+* [ping.h](https://github.com/xiam/arduino_ping)
+
+## Diagrams
+
+![Robobo's breadboard diagram](./doc/diagram_bb.png)
+
+![Robobo's schematic diagram](./doc/diagram_schem.png)
 
 ## License
 
