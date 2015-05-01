@@ -1,4 +1,4 @@
-// Copyright (c) 2014 José Carlos Nieto, https://menteslibres.net/xiam
+// Copyright (c) 2014-2015 José Carlos Nieto, https://menteslibres.net/xiam
 //
 // Permission is hereby granted, free of charge, to any person obtaining
 // a copy of this software and associated documentation files (the
@@ -21,147 +21,201 @@
 
 #include <Servo.h>
 
-#include <motor_driver.h>
-#include <ping.h>
+#include <MotorDriver.h>
+#include <Ping.h>
 
-#define GENERAL_LED_PIN       13
+//#define DEBUG
 
-// Minimum safe distance to obstacle.
-#define MIN_SANE_DISTANCE     100
+// Debug PIN
+#define ROBOBO_DEBUG_PIN              13
 
-#define PING_PIN              4
-#define PARALLAX_SERVO_SIGNAL 2
+// Minimum safe distance to obstacle (mm).
+#define ROBOBO_MINIMUM_DISTANCE_TO_OBSTACLE   300
 
-#define ANGLE_NEUTRAL         90
-#define ANGLE_FOV             30
+#define ROBOBO_PING_SENSOR_PIN        4
+#define ROBOBO_SERVO_PIN              2
 
-#define SERVO_TURN_SPEED      300
-#define SAFE_INERTIA_TIME     500
+#define ROBOBO_PING_FOV               40
+#define ROBOBO_SERVO_ANGLE_NEUTRAL    90
 
-#define DRV8833_AIN1_PIN      6
-#define DRV8833_AIN2_PIN      5
+#define ROBOBO_SERVO_FULL_TURN_SPEED  3000
 
-#define DRV8833_BIN1_PIN      10
-#define DRV8833_BIN2_PIN      9
+#define ROBOBO_INERTIA_MS             2000
+#define ROBOBO_FULL_TURN_TIME         5000
+#define ROBOBO_SLUG_TURN_SPEED        ROBOBO_FULL_TURN_TIME/(int(360/ROBOBO_PING_FOV))
 
-#define DIRECTION_FORWARD     0
-#define DIRECTION_LEFT        1
-#define DIRECTION_RIGHT       2
-#define DIRECTION_BACKWARD    3
+#define ROBOBO_DRV8833_AIN1_PIN       6
+#define ROBOBO_DRV8833_AIN2_PIN       5
 
-// DRV8833.
-MotorDrv *motorA;
-MotorDrv *motorB;
+#define ROBOBO_DRV8833_BIN1_PIN       10
+#define ROBOBO_DRV8833_BIN2_PIN       9
 
-// PING))) Sensor.
-Ping *ping;
+#define SERIAL_BAUD_RATE              115200
 
-// Parallax servo.
-Servo mainServo;
+#define DIRECTION_CLOCKWISE           0
+#define DIRECTION_FORWARD             1
+#define DIRECTION_COUNTER_CLOCKWISE   2
+#define DIRECTION_UNKNOWN             3
+
+#define ROBOBO_RANDOM_CHECK_PROBABILITY 25
+
+MotorDriver *motorLeft;
+MotorDriver *motorRight;
+
+Ping *pingSensor;
+
+Servo pingServo;
+
+int currentServoAngle = -1;
 
 void setup() {
   // Enable serial communication.
-  Serial.begin(9600);
+#ifdef DEBUG
+  Serial.begin(SERIAL_BAUD_RATE);
+#endif
 
-  // Initializing led pin.
-  pinMode(GENERAL_LED_PIN, OUTPUT);
+  randomSeed(analogRead(0));
+
+  // Initializing debug pin.
+  pinMode(ROBOBO_DEBUG_PIN, OUTPUT);
 
   // Initializing motors.
-  motorA = new MotorDrv(DRV8833_AIN1_PIN, DRV8833_AIN2_PIN);
-  motorB = new MotorDrv(DRV8833_BIN1_PIN, DRV8833_BIN2_PIN);
+  motorLeft   = new MotorDriver(ROBOBO_DRV8833_AIN1_PIN, ROBOBO_DRV8833_AIN2_PIN);
+  motorRight  = new MotorDriver(ROBOBO_DRV8833_BIN1_PIN, ROBOBO_DRV8833_BIN2_PIN);
 
   // Initializing PING)))
-  ping = new Ping(PING_PIN);
+  pingSensor = new Ping(ROBOBO_PING_SENSOR_PIN);
 
   // Initializing servo.
-  mainServo.attach(PARALLAX_SERVO_SIGNAL);
+  pingServo.attach(ROBOBO_SERVO_PIN);
 
   // Setting servo at neutral position.
-  mainServo.write(ANGLE_NEUTRAL);
+  setServoAngle(ROBOBO_SERVO_ANGLE_NEUTRAL);
 
   // Waiting for the user...
-  for (int i = 0; i < 5; i++) {
-    digitalWrite(GENERAL_LED_PIN, HIGH);
-    delay(500);
-    digitalWrite(GENERAL_LED_PIN, LOW);
+  for (int i = 0; i < 10; i++) {
+    digitalWrite(ROBOBO_DEBUG_PIN, i%2 ? HIGH : LOW);
     delay(500);
   }
 }
 
-// Has a 5 in 100 possibility of returning 1.
+void setServoAngle(int angle) {
+  if (currentServoAngle != angle) {
+    pingServo.write(angle);
+    if (currentServoAngle >= 0) {
+      int diff = abs(currentServoAngle - angle);
+      delay(ROBOBO_SERVO_FULL_TURN_SPEED/int(360/diff));
+    }
+    currentServoAngle = angle;
+  }
+}
+
 int randomCheck() {
-  if (random(0, 100) >= 95) {
-    return 1;
-  }
-  return 0;
+  return (random(0, 100) < ROBOBO_RANDOM_CHECK_PROBABILITY);
 }
 
-// Returns 1 if the way is clear.
-int canKeepForward() {
-  long distance;
+float canKeepForward() {
+  long pulse = pingSensor->Duration();
 
-  distance = ping->distance();
+#ifdef DEBUG
+  Serial.print("D(mm): ");
+#endif
 
-  if (distance > MIN_SANE_DISTANCE) {
-    return 1;
+  if (pulse == PING_UNKNOWN_DISTANCE) {
+#ifdef DEBUG
+    Serial.println("?");
+#endif
+    return 0.0;
   }
 
-  return 0;
+  float mm = PING_DISTANCE_MM(pulse);
+
+#ifdef DEBUG
+  Serial.println(mm);
+#endif
+
+  return mm > ROBOBO_MINIMUM_DISTANCE_TO_OBSTACLE ? mm : 0.0;
 }
 
-// Checks environment to determine the position with less obstancles.
 int determineBestDirection() {
-
   int bestDirection;
   int testDirection;
 
-  long distance;
-  long maxDistance;
+  float distance;
+  float maxDistance;
+
   bool okForward;
 
   maxDistance   = -1;
   bestDirection = -1;
+
   okForward = false;
 
-  for (int i = 0; i < 3; i++) {
-    switch (i) {
-      case 0:
-        mainServo.write(ANGLE_NEUTRAL + ANGLE_FOV);
-        testDirection = DIRECTION_LEFT;
+#ifdef DEBUG
+  Serial.println("Best direction?");
+#endif
+
+  byte test;
+  byte acc;
+  int dice;
+
+  acc = 0;
+
+  for (int i = DIRECTION_CLOCKWISE; i < DIRECTION_UNKNOWN; i++) {
+
+    while (1) {
+      dice = random(DIRECTION_CLOCKWISE, DIRECTION_UNKNOWN);
+      test = (1 << dice);
+
+      if ((acc | test) != acc) {
+        acc = acc | test;
+        break;
+      }
+    }
+
+    switch (dice) {
+      case DIRECTION_CLOCKWISE:
+#ifdef DEBUG
+        Serial.println("Clockwise");
+#endif
+        setServoAngle(ROBOBO_SERVO_ANGLE_NEUTRAL - ROBOBO_PING_FOV);
+        testDirection = DIRECTION_CLOCKWISE;
       break;
-      case 1:
-        mainServo.write(ANGLE_NEUTRAL);
+      case DIRECTION_FORWARD:
+#ifdef DEBUG
+        Serial.println("Forward");
+#endif
+        setServoAngle(ROBOBO_SERVO_ANGLE_NEUTRAL);
         testDirection = DIRECTION_FORWARD;
       break;
-      case 2:
-        mainServo.write(ANGLE_NEUTRAL - ANGLE_FOV);
-        testDirection = DIRECTION_RIGHT;
+      case DIRECTION_COUNTER_CLOCKWISE:
+#ifdef DEBUG
+        Serial.println("Counter-clockwise");
+#endif
+        setServoAngle(ROBOBO_SERVO_ANGLE_NEUTRAL + ROBOBO_PING_FOV);
+        testDirection = DIRECTION_COUNTER_CLOCKWISE;
       break;
     }
 
-    delay(SERVO_TURN_SPEED);
+    distance = canKeepForward();
 
-    distance = ping->distance();
+    if (distance > 0) {
 
-    Serial.print("Distance: ");
-    Serial.print("-> ");
-    Serial.print(i);
-    Serial.print("-> ");
-    Serial.print(distance);
-    Serial.println("cm.");
+      if (testDirection == DIRECTION_FORWARD) {
+        okForward = true;
+        break;
+      }
 
-    if (testDirection == DIRECTION_FORWARD && distance >= 200) {
-      okForward = true;
+      if (distance > maxDistance) {
+        maxDistance = distance;
+        bestDirection = testDirection;
+      }
     }
 
-    if (bestDirection < 0 || distance > maxDistance) {
-      maxDistance = distance;
-      bestDirection = testDirection;
-    }
   }
 
-  mainServo.write(ANGLE_NEUTRAL);
-  delay(SERVO_TURN_SPEED);
+  // Getting servo back to neutral.
+  setServoAngle(ROBOBO_SERVO_ANGLE_NEUTRAL);
 
   if (okForward) {
     // No matter what is the best position, if we have a field clear ahead
@@ -169,9 +223,9 @@ int determineBestDirection() {
     return DIRECTION_FORWARD;
   }
 
-  if (maxDistance < MIN_SANE_DISTANCE) {
+  if (bestDirection < 0) {
     // If we don't have any option, turn backwards.
-    return DIRECTION_BACKWARD;
+    return DIRECTION_UNKNOWN;
   }
 
   return bestDirection;
@@ -180,91 +234,122 @@ int determineBestDirection() {
 void loop() {
 
   int direction;
-  bool stopped;
+  bool halt;
 
   direction = DIRECTION_FORWARD;
+  halt = false;
 
-  stopped = false;
+  digitalWrite(ROBOBO_DEBUG_PIN, HIGH);
 
-  if (!canKeepForward()) {
-    stopped = true;
+  if (canKeepForward() < 1.0f) {
+    halt = true;
   }
 
-  if (stopped || randomCheck()) {
-    digitalWrite(GENERAL_LED_PIN, HIGH);
+  if (halt || randomCheck()) {
+#ifdef DEBUG
+    Serial.println("Think again!");
+#endif
 
-    if (stopped) {
-      motorA->setSpeed(0);
-      motorB->setSpeed(0);
+    if (halt) {
+      motorLeft->Halt();
+      motorRight->Halt();
     }
 
     direction = determineBestDirection();
-    Serial.print("Best direction: ");
-    Serial.print(direction);
-    Serial.println(".");
 
-    digitalWrite(GENERAL_LED_PIN, LOW);
+#ifdef DEBUG
+    Serial.print("Best direction: ");
+#endif
+    switch (direction) {
+      case DIRECTION_FORWARD:
+#ifdef DEBUG
+        Serial.println("Forward");
+#endif
+      break;
+      case DIRECTION_CLOCKWISE:
+#ifdef DEBUG
+        Serial.println("Clockwise");
+#endif
+      break;
+      case DIRECTION_COUNTER_CLOCKWISE:
+#ifdef DEBUG
+        Serial.println("Counter-Clockwise");
+#endif
+      break;
+      case DIRECTION_UNKNOWN:
+#ifdef DEBUG
+        Serial.println("Backward");
+#endif
+      break;
+    }
+
   }
 
   switch (direction) {
     case DIRECTION_FORWARD:
+#ifdef DEBUG
       Serial.println("Keep forward.");
-      motorA->setSpeed(255);
-      motorB->setSpeed(255);
+#endif
+      motorLeft->Forward(1.0);
+      motorRight->Forward(1.0);
     break;
-    case DIRECTION_LEFT:
-      Serial.println("Go left.");
-      motorA->setSpeed(-255);
-      motorB->setSpeed(255);
-      delay(SAFE_INERTIA_TIME*2);
+    case DIRECTION_CLOCKWISE:
+#ifdef DEBUG
+      Serial.println("Turn clockwise.");
+#endif
+      motorLeft->Forward(1.0);
+      motorRight->Backward(1.0);
+      delay(ROBOBO_SLUG_TURN_SPEED);
     break;
-    case DIRECTION_RIGHT:
-      Serial.println("Go right.");
-      motorA->setSpeed(255);
-      motorB->setSpeed(-255);
-      delay(SAFE_INERTIA_TIME*2);
+    case DIRECTION_COUNTER_CLOCKWISE:
+#ifdef DEBUG
+      Serial.println("Turn counter-clockwise.");
+#endif
+      motorLeft->Backward(1.0);
+      motorRight->Forward(1.0);
+      delay(ROBOBO_SLUG_TURN_SPEED);
     break;
-    case DIRECTION_BACKWARD:
-      motorA->setSpeed(-255);
-      motorB->setSpeed(-255);
+    case DIRECTION_UNKNOWN:
+#ifdef DEBUG
+      Serial.println("Keep doing random stuff until finding a safe path.");
+#endif
 
-      delay(SAFE_INERTIA_TIME*3);
+      int randomDelay = -1;
 
-      Serial.println("Turn until safe.");
-      int safe = 0;
-      int k;
+      while (!canKeepForward()) {
 
-      for (k = 0; safe == 0; k++) {
-        Serial.print("k: ");
-        Serial.println(k);
-        int j;
-        for (j = 0; j < 100; j++) {
-          digitalWrite(GENERAL_LED_PIN, HIGH);
-          if (canKeepForward()) {
-            safe = 1;
-            break;
-          };
-          if (k%2) {
-            motorA->setSpeed(255);
-            motorB->setSpeed(-255);
+        if (randomDelay < 0) {
+          if (random(0, 2) == 1) {
+#ifdef DEBUG
+            Serial.print("Turn clockwise ");
+#endif
+            motorLeft->Forward(1.0);
+            motorRight->Backward(1.0);
           } else {
-            motorA->setSpeed(-255);
-            motorB->setSpeed(255);
-          };
-          digitalWrite(GENERAL_LED_PIN, LOW);
-          delay(100);
-        };
-      };
+#ifdef DEBUG
+            Serial.print("Turn counter-clockwise ");
+#endif
+            motorRight->Forward(1.0);
+            motorLeft->Backward(1.0);
+          }
 
-      motorA->setSpeed(0);
-      motorB->setSpeed(0);
+          randomDelay = random(0, ROBOBO_FULL_TURN_TIME);
+#ifdef DEBUG
+          Serial.println(randomDelay);
+#endif
+        }
 
-      delay(SAFE_INERTIA_TIME);
+        if (randomDelay > 0) {
+          int randomSample = random(0, ROBOBO_SLUG_TURN_SPEED);
+          delay(randomSample);
+          randomDelay -= randomSample;
+        }
+      }
 
     break;
   }
 
-  digitalWrite(GENERAL_LED_PIN, LOW);
+  digitalWrite(ROBOBO_DEBUG_PIN, LOW);
 
-  delay(SAFE_INERTIA_TIME);
+  delay(random(0, ROBOBO_INERTIA_MS));
 }

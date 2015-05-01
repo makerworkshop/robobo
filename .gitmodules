@@ -1,0 +1,6 @@
+[submodule "lib/arduino_motor_driver"]
+	path = lib/arduino_motor_driver
+	url = https://github.com/makerworkshop/arduino_motor_driver.git
+[submodule "lib/arduino_ping_sensor"]
+	path = lib/arduino_ping_sensor
+	url = https://github.com/makerworkshop/arduino_ping_sensor.git
