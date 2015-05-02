@@ -24,13 +24,13 @@
 #include <MotorDriver.h>
 #include <Ping.h>
 
-//#define DEBUG
+// #define DEBUG
 
 // Debug PIN
 #define ROBOBO_DEBUG_PIN              13
 
 // Minimum safe distance to obstacle (mm).
-#define ROBOBO_MINIMUM_DISTANCE_TO_OBSTACLE   300
+#define ROBOBO_MINIMUM_DISTANCE_TO_OBSTACLE   800
 
 #define ROBOBO_PING_SENSOR_PIN        4
 #define ROBOBO_SERVO_PIN              2
@@ -38,11 +38,11 @@
 #define ROBOBO_PING_FOV               40
 #define ROBOBO_SERVO_ANGLE_NEUTRAL    90
 
-#define ROBOBO_SERVO_FULL_TURN_SPEED  3000
+#define ROBOBO_SERVO_FULL_TURN_SPEED  2500
 
-#define ROBOBO_INERTIA_MS             2000
-#define ROBOBO_FULL_TURN_TIME         5000
-#define ROBOBO_SLUG_TURN_SPEED        ROBOBO_FULL_TURN_TIME/(int(360/ROBOBO_PING_FOV))
+#define ROBOBO_INERTIA_MS             500
+#define ROBOBO_FULL_TURN_TIME         2800
+#define ROBOBO_SLUG_TURN_SPEED        int(ROBOBO_FULL_TURN_TIME/(int(360/ROBOBO_PING_FOV)))
 
 #define ROBOBO_DRV8833_AIN1_PIN       6
 #define ROBOBO_DRV8833_AIN2_PIN       5
@@ -57,7 +57,9 @@
 #define DIRECTION_COUNTER_CLOCKWISE   2
 #define DIRECTION_UNKNOWN             3
 
-#define ROBOBO_RANDOM_CHECK_PROBABILITY 25
+#define ROBOBO_FULL_SPEED             1.0
+
+#define ROBOBO_RANDOM_CHECK_PROBABILITY 10
 
 MotorDriver *motorLeft;
 MotorDriver *motorRight;
@@ -114,7 +116,7 @@ int randomCheck() {
   return (random(0, 100) < ROBOBO_RANDOM_CHECK_PROBABILITY);
 }
 
-float canKeepForward() {
+long distanceToObstacle() {
   long pulse = pingSensor->Duration();
 
 #ifdef DEBUG
@@ -134,41 +136,34 @@ float canKeepForward() {
   Serial.println(mm);
 #endif
 
-  return mm > ROBOBO_MINIMUM_DISTANCE_TO_OBSTACLE ? mm : 0.0;
+  return mm;
 }
 
-int determineBestDirection() {
-  int bestDirection;
-  int testDirection;
+bool canKeepForward() {
+  return (distanceToObstacle() > ROBOBO_MINIMUM_DISTANCE_TO_OBSTACLE);
+}
 
-  float distance;
-  float maxDistance;
-
-  bool okForward;
-
-  maxDistance   = -1;
-  bestDirection = -1;
-
-  okForward = false;
-
+int chooseDirection() {
 #ifdef DEBUG
   Serial.println("Best direction?");
 #endif
 
-  byte test;
-  byte acc;
-  int dice;
+  byte choices;
+  byte tested;
+  byte dice;
+  byte direction;
 
-  acc = 0;
+  choices = 0;
+  tested = 0;
 
   for (int i = DIRECTION_CLOCKWISE; i < DIRECTION_UNKNOWN; i++) {
 
     while (1) {
       dice = random(DIRECTION_CLOCKWISE, DIRECTION_UNKNOWN);
-      test = (1 << dice);
+      direction = (1 << dice);
 
-      if ((acc | test) != acc) {
-        acc = acc | test;
+      if ((tested | direction) != tested) {
+        tested = tested | direction;
         break;
       }
     }
@@ -176,59 +171,50 @@ int determineBestDirection() {
     switch (dice) {
       case DIRECTION_CLOCKWISE:
 #ifdef DEBUG
-        Serial.println("Clockwise");
+        Serial.println("Testing clockwise");
 #endif
         setServoAngle(ROBOBO_SERVO_ANGLE_NEUTRAL - ROBOBO_PING_FOV);
-        testDirection = DIRECTION_CLOCKWISE;
       break;
       case DIRECTION_FORWARD:
 #ifdef DEBUG
-        Serial.println("Forward");
+        Serial.println("Testing forward");
 #endif
         setServoAngle(ROBOBO_SERVO_ANGLE_NEUTRAL);
-        testDirection = DIRECTION_FORWARD;
       break;
       case DIRECTION_COUNTER_CLOCKWISE:
 #ifdef DEBUG
-        Serial.println("Counter-clockwise");
+        Serial.println("Testing counter-clockwise");
 #endif
         setServoAngle(ROBOBO_SERVO_ANGLE_NEUTRAL + ROBOBO_PING_FOV);
-        testDirection = DIRECTION_COUNTER_CLOCKWISE;
       break;
     }
 
-    distance = canKeepForward();
+    if (canKeepForward()) {
+      choices = choices | direction;
 
-    if (distance > 0) {
-
-      if (testDirection == DIRECTION_FORWARD) {
-        okForward = true;
-        break;
-      }
-
-      if (distance > maxDistance) {
-        maxDistance = distance;
-        bestDirection = testDirection;
-      }
+#ifdef DEBUG
+      Serial.print("Adding option: ");
+      Serial.println(direction);
+#endif
     }
-
   }
 
   // Getting servo back to neutral.
   setServoAngle(ROBOBO_SERVO_ANGLE_NEUTRAL);
 
-  if (okForward) {
-    // No matter what is the best position, if we have a field clear ahead
-    // choose it.
-    return DIRECTION_FORWARD;
-  }
-
-  if (bestDirection < 0) {
-    // If we don't have any option, turn backwards.
+  if (choices == 0) {
+#ifdef DEBUG
+    Serial.println("No choices, sorry.");
+#endif
     return DIRECTION_UNKNOWN;
   }
 
-  return bestDirection;
+  while (1) {
+    dice = random(DIRECTION_CLOCKWISE, DIRECTION_UNKNOWN);
+    if ((choices & (1 << dice)) > 0) {
+      return dice;
+    }
+  }
 }
 
 void loop() {
@@ -241,7 +227,7 @@ void loop() {
 
   digitalWrite(ROBOBO_DEBUG_PIN, HIGH);
 
-  if (canKeepForward() < 1.0f) {
+  if (!canKeepForward()) {
     halt = true;
   }
 
@@ -255,34 +241,7 @@ void loop() {
       motorRight->Halt();
     }
 
-    direction = determineBestDirection();
-
-#ifdef DEBUG
-    Serial.print("Best direction: ");
-#endif
-    switch (direction) {
-      case DIRECTION_FORWARD:
-#ifdef DEBUG
-        Serial.println("Forward");
-#endif
-      break;
-      case DIRECTION_CLOCKWISE:
-#ifdef DEBUG
-        Serial.println("Clockwise");
-#endif
-      break;
-      case DIRECTION_COUNTER_CLOCKWISE:
-#ifdef DEBUG
-        Serial.println("Counter-Clockwise");
-#endif
-      break;
-      case DIRECTION_UNKNOWN:
-#ifdef DEBUG
-        Serial.println("Backward");
-#endif
-      break;
-    }
-
+    direction = chooseDirection();
   }
 
   switch (direction) {
@@ -290,23 +249,23 @@ void loop() {
 #ifdef DEBUG
       Serial.println("Keep forward.");
 #endif
-      motorLeft->Forward(1.0);
-      motorRight->Forward(1.0);
+      motorLeft->Forward(ROBOBO_FULL_SPEED);
+      motorRight->Forward(ROBOBO_FULL_SPEED);
     break;
     case DIRECTION_CLOCKWISE:
 #ifdef DEBUG
       Serial.println("Turn clockwise.");
 #endif
-      motorLeft->Forward(1.0);
-      motorRight->Backward(1.0);
+      motorLeft->Forward(ROBOBO_FULL_SPEED);
+      motorRight->Backward(ROBOBO_FULL_SPEED);
       delay(ROBOBO_SLUG_TURN_SPEED);
     break;
     case DIRECTION_COUNTER_CLOCKWISE:
 #ifdef DEBUG
       Serial.println("Turn counter-clockwise.");
 #endif
-      motorLeft->Backward(1.0);
-      motorRight->Forward(1.0);
+      motorLeft->Backward(ROBOBO_FULL_SPEED);
+      motorRight->Forward(ROBOBO_FULL_SPEED);
       delay(ROBOBO_SLUG_TURN_SPEED);
     break;
     case DIRECTION_UNKNOWN:
@@ -319,37 +278,48 @@ void loop() {
       while (!canKeepForward()) {
 
         if (randomDelay < 0) {
-          if (random(0, 2) == 1) {
+          switch (random(0, 3)) {
+            case 0:
 #ifdef DEBUG
-            Serial.print("Turn clockwise ");
+              Serial.print("Turn clockwise.");
 #endif
-            motorLeft->Forward(1.0);
-            motorRight->Backward(1.0);
-          } else {
+              motorLeft->Forward(ROBOBO_FULL_SPEED);
+              motorRight->Backward(ROBOBO_FULL_SPEED);
+            break;
+            case 1:
 #ifdef DEBUG
-            Serial.print("Turn counter-clockwise ");
+              Serial.print("Turn counter-clockwise.");
 #endif
-            motorRight->Forward(1.0);
-            motorLeft->Backward(1.0);
+              motorLeft->Backward(ROBOBO_FULL_SPEED);
+              motorRight->Forward(ROBOBO_FULL_SPEED);
+            break;
+            case 2:
+#ifdef DEBUG
+              Serial.print("Go backward.");
+#endif
+              motorLeft->Backward(ROBOBO_FULL_SPEED);
+              motorRight->Backward(ROBOBO_FULL_SPEED);
+            break;
           }
 
-          randomDelay = random(0, ROBOBO_FULL_TURN_TIME);
+          randomDelay = random(ROBOBO_SLUG_TURN_SPEED, ROBOBO_FULL_TURN_TIME);
 #ifdef DEBUG
           Serial.println(randomDelay);
 #endif
         }
 
         if (randomDelay > 0) {
-          int randomSample = random(0, ROBOBO_SLUG_TURN_SPEED);
+          int randomSample = random(int(ROBOBO_SLUG_TURN_SPEED/2), ROBOBO_SLUG_TURN_SPEED);
           delay(randomSample);
           randomDelay -= randomSample;
         }
       }
 
+      motorLeft->Halt();
+      motorRight->Halt();
     break;
   }
 
   digitalWrite(ROBOBO_DEBUG_PIN, LOW);
-
-  delay(random(0, ROBOBO_INERTIA_MS));
+  delay(random(int(ROBOBO_INERTIA_MS/2), ROBOBO_INERTIA_MS));
 }
